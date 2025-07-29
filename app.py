@@ -2,6 +2,8 @@ from flask import Flask, request, render_template_string
 import os
 import fitz  # PyMuPDF
 from werkzeug.utils import secure_filename
+import shutil
+import time
 
 app = Flask(__name__)
 
@@ -36,6 +38,9 @@ TEMPLATE = '''
         .result {
             margin-top: 20px;
         }
+        code {
+            color: green;
+        }
     </style>
 </head>
 <body>
@@ -69,46 +74,60 @@ def index():
     if request.method == "POST":
         file = request.files["file"]
         output_path = request.form["output_path"].strip()
-        os.makedirs(output_path, exist_ok=True)
 
+        # Save uploaded file
         if file and file.filename.endswith(".pdf"):
             filename = secure_filename(file.filename)
             file_path = os.path.join(UPLOAD_FOLDER, filename)
+            os.makedirs(UPLOAD_FOLDER, exist_ok=True)
             file.save(file_path)
 
-            split_pdf_chapters(file_path, output_path)
-            result = f"Chapters split successfully and saved to: <code>{output_path}</code>"
+            # Create output directory
+            os.makedirs(output_path, exist_ok=True)
+
+            try:
+                split_pdf_chapters(file_path, output_path)
+                result = f"Chapters split successfully and saved to: <code>{output_path}</code> (ZIP also available)"
+            except Exception as e:
+                result = f"❌ Error: {str(e)}"
         else:
             result = "❌ Invalid file. Please upload a PDF."
 
     return render_template_string(TEMPLATE, result=result)
 
 def split_pdf_chapters(pdf_path, output_dir):
+    start_time = time.time()
     doc = fitz.open(pdf_path)
     chapters = {}
 
     for i, page in enumerate(doc):
-        text = page.get_text()
-        if "Chapter " in text:
-            for line in text.splitlines():
-                if line.strip().startswith("Chapter"):
-                    chapter_title = line.strip()
+        text = page.get_text("text")
+        lines = text.splitlines()
+
+        for line in lines:
+            if line.strip().lower().startswith("chapter"):
+                chapter_title = line.strip()
+                if chapter_title not in chapters:
                     chapters[chapter_title] = i
                     break
+
+    if not chapters:
+        raise Exception("No chapters found in the PDF.")
 
     chapter_items = sorted(chapters.items(), key=lambda x: x[1])
 
     for idx, (title, start_page) in enumerate(chapter_items):
         end_page = chapter_items[idx + 1][1] if idx + 1 < len(chapter_items) else len(doc)
-        safe_title = title.replace(":", " -").replace("/", "-").strip()
+        safe_title = title.replace(":", " -").replace("/", "-").replace("\\", "-").strip()
         output_pdf_path = os.path.join(output_dir, f"{safe_title}.pdf")
 
         chapter_doc = fitz.open()
-        for page_num in range(start_page, end_page):
-            chapter_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
-
+        chapter_doc.insert_pdf(doc, from_page=start_page, to_page=end_page - 1)
         chapter_doc.save(output_pdf_path)
         chapter_doc.close()
+
+    shutil.make_archive(output_dir, 'zip', output_dir)
+    print(f"✅ PDF split completed in {time.time() - start_time:.2f} seconds.")
 
 if __name__ == "__main__":
     app.run(debug=True)
